@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Sessions
+
+- Keep the session alive through transient frame decode failures, such as
+  an AVC444 chroma-only update arriving before its luma subframe. The
+  failure is still shown in Stats for Nerds, and the session now only
+  ends after a sustained streak of failed decodes.
+
 ### Remote input
 
 - Typing reaches the remote desktop as scancodes rather than Unicode

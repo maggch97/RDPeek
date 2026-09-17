@@ -142,7 +142,15 @@ final class RemoteInputCaptureNSView: NSView {
         inputState.updatePointerLocation(point)
         let multiplier = event.hasPreciseScrollingDeltas ? 10.0 : 120.0
         let verticalRotation = Int((event.scrollingDeltaY * multiplier).rounded())
-        let horizontalRotation = Int((event.scrollingDeltaX * multiplier).rounded())
+        // The two wheel axes do not share a sign convention with macOS.
+        // Vertical passes straight through, but RDP's horizontal wheel
+        // inherits Windows' WM_MOUSEHWHEEL, where a positive rotation means
+        // the wheel was tilted to the right, and macOS reports that same
+        // direction as a negative scrollingDeltaX. Negating the horizontal
+        // delta is what keeps a two-finger swipe moving the remote content
+        // the way it moves locally; FreeRDP's Mac client flips this one axis
+        // for the same reason.
+        let horizontalRotation = Int((-event.scrollingDeltaX * multiplier).rounded())
         var events: [RDPSlowPathInputEvent] = []
         if verticalRotation != 0 {
             events.append(.verticalWheel(rotation: verticalRotation, x: point.x, y: point.y))

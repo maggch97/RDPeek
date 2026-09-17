@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Sessions
+
+- Fixed horizontal trackpad scrolling inside a session moving the remote
+  content the wrong way. RDP's horizontal wheel follows Windows'
+  WM_MOUSEHWHEEL sign, which runs opposite to macOS, so that axis is now
+  negated while vertical scrolling is unchanged.
+
 ## 1.1.1
 
 Compatibility and reliability improvements for Windows and KDE KRdp

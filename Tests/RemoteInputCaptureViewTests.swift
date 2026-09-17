@@ -181,6 +181,58 @@ final class RemoteInputCaptureViewTests: XCTestCase {
         XCTAssertEqual(harness.recorder.events, [])
     }
 
+    // MARK: - Scroll wheel
+
+    func testVerticalScrollKeepsTheMacOSSign() {
+        let harness = makeHarness()
+        let event = scrollEvent(deltaX: 0, deltaY: 30, isPrecise: true)
+        XCTAssertGreaterThan(event.scrollingDeltaY, 0)
+
+        harness.view.scrollWheel(with: event)
+        XCTAssertEqual(verticalRotation(in: harness.recorder.events), 300)
+        XCTAssertNil(horizontalRotation(in: harness.recorder.events))
+    }
+
+    func testHorizontalScrollIsInvertedForTheRDPWheel() {
+        // RDP's horizontal wheel runs opposite to macOS, so a positive
+        // scrollingDeltaX has to reach the server as a negative rotation.
+        let harness = makeHarness()
+        let event = scrollEvent(deltaX: 30, deltaY: 0, isPrecise: true)
+        XCTAssertGreaterThan(event.scrollingDeltaX, 0)
+
+        harness.view.scrollWheel(with: event)
+        XCTAssertEqual(horizontalRotation(in: harness.recorder.events), -300)
+        XCTAssertNil(verticalRotation(in: harness.recorder.events))
+
+        harness.recorder.events.removeAll()
+        let opposite = scrollEvent(deltaX: -30, deltaY: 0, isPrecise: true)
+        XCTAssertLessThan(opposite.scrollingDeltaX, 0)
+
+        harness.view.scrollWheel(with: opposite)
+        XCTAssertEqual(horizontalRotation(in: harness.recorder.events), 300)
+    }
+
+    func testLineScrollUsesTheWheelStepMultiplierOnBothAxes() {
+        let harness = makeHarness()
+        let event = scrollEvent(deltaX: 1, deltaY: 1, isPrecise: false)
+        XCTAssertFalse(event.hasPreciseScrollingDeltas)
+
+        harness.view.scrollWheel(with: event)
+        XCTAssertEqual(verticalRotation(in: harness.recorder.events), 120)
+        XCTAssertEqual(horizontalRotation(in: harness.recorder.events), -120)
+    }
+
+    func testScrollOutsideTheRemoteContentSendsNothing() {
+        let harness = makeHarness()
+        harness.view.scrollWheel(with: scrollEvent(
+            deltaX: 30,
+            deltaY: 30,
+            isPrecise: true,
+            location: NSPoint(x: 400, y: 400)
+        ))
+        XCTAssertEqual(harness.recorder.events, [])
+    }
+
     // MARK: - Helpers
 
     private func makeHarness() -> Harness {
@@ -253,6 +305,55 @@ final class RemoteInputCaptureViewTests: XCTestCase {
             preconditionFailure("Failed to synthesize mouse event")
         }
         return event
+    }
+
+    /// `NSEvent.mouseEvent` cannot carry scrolling deltas, so a scroll has
+    /// to be bridged from a `CGEvent`. Wheel 1 is the vertical axis and
+    /// wheel 2 the horizontal one, and pixel units are what makes AppKit
+    /// report precise deltas. The synthesized event belongs to no window,
+    /// so its location is a screen point that AppKit flips through the
+    /// primary screen before reporting it as `locationInWindow`.
+    private func scrollEvent(
+        deltaX: Int32,
+        deltaY: Int32,
+        isPrecise: Bool,
+        location: NSPoint = NSPoint(x: 100, y: 50)
+    ) -> NSEvent {
+        guard let cgEvent = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: isPrecise ? .pixel : .line,
+            wheelCount: 2,
+            wheel1: deltaY,
+            wheel2: deltaX,
+            wheel3: 0
+        ) else {
+            preconditionFailure("Failed to synthesize scroll event")
+        }
+        let flipHeight = NSScreen.screens.first?.frame.height ?? 0
+        cgEvent.location = CGPoint(x: location.x, y: flipHeight - location.y)
+        guard let event = NSEvent(cgEvent: cgEvent) else {
+            preconditionFailure("Failed to bridge scroll event")
+        }
+        XCTAssertEqual(event.locationInWindow, location)
+        return event
+    }
+
+    private func verticalRotation(in events: [RDPSlowPathInputEvent]) -> Int? {
+        events.compactMap { event in
+            guard case let .verticalWheel(rotation, _, _) = event else {
+                return nil
+            }
+            return rotation
+        }.first
+    }
+
+    private func horizontalRotation(in events: [RDPSlowPathInputEvent]) -> Int? {
+        events.compactMap { event in
+            guard case let .horizontalWheel(rotation, _, _) = event else {
+                return nil
+            }
+            return rotation
+        }.first
     }
 
     private func isPointerButton(

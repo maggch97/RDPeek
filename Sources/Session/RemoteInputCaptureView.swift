@@ -23,11 +23,19 @@ final class RemoteInputCaptureNSView: NSView {
                 releasePressedInputs()
             }
         }
+        didSet {
+            // Rendering reassigns the same session on every frame, so only
+            // the transition into a live session warrants a state push.
+            if oldValue == nil, inputSession != nil {
+                synchronizeToggleKeys()
+            }
+        }
     }
 
     private var trackingArea: NSTrackingArea?
     private var inputState = RDPInputStateTracker()
     private var pressedKeyScancodes = Set<RDPKeyboardScancode>()
+    private var isCapsLockOn = false
 
     override var acceptsFirstResponder: Bool {
         true
@@ -62,6 +70,11 @@ final class RemoteInputCaptureNSView: NSView {
                 name: NSWindow.didResignKeyNotification,
                 object: window
             )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.didBecomeKeyNotification,
+                object: window
+            )
         }
         if let newWindow {
             NotificationCenter.default.addObserver(
@@ -70,12 +83,24 @@ final class RemoteInputCaptureNSView: NSView {
                 name: NSWindow.didResignKeyNotification,
                 object: newWindow
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidBecomeKey),
+                name: NSWindow.didBecomeKeyNotification,
+                object: newWindow
+            )
         }
         super.viewWillMove(toWindow: newWindow)
     }
 
     @objc private func windowDidResignKey() {
         releasePressedInputs()
+    }
+
+    @objc private func windowDidBecomeKey() {
+        // The lock keys can be toggled while another app is focused, so the
+        // remote copy is refreshed every time focus comes back.
+        synchronizeToggleKeys()
     }
 
     override func resignFirstResponder() -> Bool {
@@ -230,6 +255,7 @@ final class RemoteInputCaptureNSView: NSView {
             events += releaseEventsForPressedKeys()
         }
         events += modifierSyncEvents(for: event)
+        events += toggleKeySyncEvents(for: event)
         inputSession?.send(events)
     }
 
@@ -252,7 +278,36 @@ final class RemoteInputCaptureNSView: NSView {
     }
 
     private func syncModifierKeys(with event: NSEvent) {
-        inputSession?.send(modifierSyncEvents(for: event))
+        inputSession?.send(modifierSyncEvents(for: event) + toggleKeySyncEvents(for: event))
+    }
+
+    /// Caps Lock latches instead of pressing: macOS reports it as a flag and
+    /// never delivers a key event for it, so the remote lock state is
+    /// corrected with a synchronize event rather than a scancode pair.
+    private func toggleKeySyncEvents(for event: NSEvent) -> [RDPSlowPathInputEvent] {
+        let isOn = event.modifierFlags.contains(.capsLock)
+        guard isOn != isCapsLockOn else {
+            return []
+        }
+        isCapsLockOn = isOn
+        return [.synchronize(toggleFlags: toggleKeyFlags)]
+    }
+
+    /// Pushes the local lock-key state to the remote desktop. Nothing is held
+    /// down at the moments this runs — losing focus releases everything — so
+    /// the bare synchronize event carries the whole story.
+    private func synchronizeToggleKeys() {
+        guard window?.isKeyWindow == true else {
+            return
+        }
+        isCapsLockOn = NSEvent.modifierFlags.contains(.capsLock)
+        inputSession?.send(.synchronize(toggleFlags: toggleKeyFlags))
+    }
+
+    /// A Mac keypad always types digits, which the remote only honours while
+    /// its own Num Lock is on, so Num Lock is asserted unconditionally.
+    private var toggleKeyFlags: RDPToggleKeyFlags {
+        isCapsLockOn ? [.numLock, .capsLock] : [.numLock]
     }
 
     private func sendPointerMove(_ event: NSEvent) {
@@ -339,8 +394,92 @@ private enum MacRDPKeyboardMapping {
         if alwaysSendsScancode(forKeyCode: event.keyCode) {
             return true
         }
-        return event.modifierFlags.intersection([.command, .control, .option]).isEmpty == false
+        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty == false {
+            return true
+        }
+        return producesUSLayoutCharacter(for: event)
     }
+
+    /// A scancode names a key position, and the server resolves it through the
+    /// US layout RDPKit announces at connect time, so a key that types
+    /// something else locally would reach the remote as the wrong character.
+    /// Those keys keep the Unicode path; the rest go out as scancodes so the
+    /// remote input method sees them.
+    private static func producesUSLayoutCharacter(for event: NSEvent) -> Bool {
+        // Command, Control and Option are handled above, and Shift and Caps
+        // Lock read the same in both strings, so the only thing that can make
+        // them disagree here is a dead key: ⌥e arms the acute accent and
+        // the next E arrives already composed as “é”. The remote keeps no
+        // dead-key state and would type a bare “e” for that key position, so
+        // only the Unicode path can carry the character the key produced.
+        guard event.characters == event.charactersIgnoringModifiers else {
+            return false
+        }
+        guard let characters = event.charactersIgnoringModifiers,
+              characters.count == 1,
+              let character = characters.first,
+              let usCharacters = usLayoutCharacters[event.keyCode]
+        else {
+            return false
+        }
+        // Shift and Caps Lock travel to the remote as events of their own, so a
+        // letter key only has to agree on which letter it is.
+        guard usCharacters.unshifted.isLetter == false else {
+            return character.lowercased() == usCharacters.unshifted.lowercased()
+        }
+        let expected = event.modifierFlags.contains(.shift) ? usCharacters.shifted : usCharacters.unshifted
+        return character == expected
+    }
+
+    private static let usLayoutCharacters: [UInt16: (unshifted: Character, shifted: Character)] = [
+        0: ("a", "A"),
+        1: ("s", "S"),
+        2: ("d", "D"),
+        3: ("f", "F"),
+        4: ("h", "H"),
+        5: ("g", "G"),
+        6: ("z", "Z"),
+        7: ("x", "X"),
+        8: ("c", "C"),
+        9: ("v", "V"),
+        11: ("b", "B"),
+        12: ("q", "Q"),
+        13: ("w", "W"),
+        14: ("e", "E"),
+        15: ("r", "R"),
+        16: ("y", "Y"),
+        17: ("t", "T"),
+        18: ("1", "!"),
+        19: ("2", "@"),
+        20: ("3", "#"),
+        21: ("4", "$"),
+        22: ("6", "^"),
+        23: ("5", "%"),
+        24: ("=", "+"),
+        25: ("9", "("),
+        26: ("7", "&"),
+        27: ("-", "_"),
+        28: ("8", "*"),
+        29: ("0", ")"),
+        30: ("]", "}"),
+        31: ("o", "O"),
+        32: ("u", "U"),
+        33: ("[", "{"),
+        34: ("i", "I"),
+        35: ("p", "P"),
+        37: ("l", "L"),
+        38: ("j", "J"),
+        39: ("'", "\""),
+        40: ("k", "K"),
+        41: (";", ":"),
+        42: ("\\", "|"),
+        43: (",", "<"),
+        44: ("/", "?"),
+        45: ("n", "N"),
+        46: ("m", "M"),
+        47: (".", ">"),
+        50: ("`", "~"),
+    ]
 
     static func scancode(forKeyCode keyCode: UInt16) -> RDPKeyboardScancode? {
         switch keyCode {
@@ -589,7 +728,7 @@ private enum MacRDPKeyboardMapping {
 
     private static func alwaysSendsScancode(forKeyCode keyCode: UInt16) -> Bool {
         switch keyCode {
-        case 36, 48, 51, 53,
+        case 36, 48, 49, 51, 53,
              65, 67, 69, 71, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92,
              96 ... 101, 103, 109, 111,
              114 ... 117, 119, 121 ... 126:

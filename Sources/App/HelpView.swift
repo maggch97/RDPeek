@@ -60,9 +60,11 @@ struct HelpView: View {
                         HelpShortcutRow("⌘,", "Settings")
                     }
                     HelpBody(
-                        "Inside a session, shortcuts with ⌘ or ⌃ are sent to the remote " +
-                            "desktop as scancodes, so Windows and Linux shortcuts work; " +
-                            "plain typing is sent as Unicode."
+                        "Inside a session, keys are sent to the remote desktop as " +
+                            "scancodes, so Windows and Linux shortcuts work and the remote " +
+                            "input method sees your typing; keys your Mac layout maps " +
+                            "differently from a US layout are sent as Unicode, so they still " +
+                            "type the character printed on the key."
                     )
                 }
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Remote input
+
+- Typing reaches the remote desktop as scancodes rather than Unicode
+  text, so a remote input method sees the keystrokes and composes from
+  them, the space bar included. Keys a Mac layout maps differently from
+  a US layout — AZERTY, QWERTZ, Dvorak, and dead-key composition — are
+  still sent as Unicode, so they keep typing the character printed on
+  the key.
+- Caps Lock reaches the remote desktop instead of being dropped: macOS
+  latches it as a flag and never sends a key event for it, so the lock
+  state is now pushed across whenever it changes and whenever the
+  session window regains focus.
+- Keypad keys type digits again, because a Mac keypad has no Num Lock of
+  its own to turn the remote's on.
+
 ## 1.1.1
 
 Compatibility and reliability improvements for Windows and KDE KRdp
